@@ -1,389 +1,318 @@
-// src/components/Dashboard2.tsx
-import { useEffect, useState } from 'react';
-import { Card, CardContent } from '../../components/ui/card';
-import { Clock, Logs, PenBox, Trash } from 'lucide-react';
+"use client";
+
+import { useState, useEffect, useMemo } from "react";
+import {
+  Card,
+  CardContent,
+} from "../../components/ui/card";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../../components/ui/select';
-import { getAuth } from 'firebase/auth';
+} from "../../components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "../../components/ui/popover";
+import { Calendar } from "../../components/ui/calendar";
+import { format, parse, isValid } from "date-fns";
+import { CalendarIcon } from "lucide-react";
+
+import { db } from "../../firebase";
 import {
   collection,
-  getFirestore,
   query,
-  where,
   onSnapshot,
-  orderBy as fbOrderBy,
+  QuerySnapshot,
+  DocumentData,
+  doc as firestoreDoc,
   updateDoc,
-  doc,
-  Timestamp,
-} from 'firebase/firestore';
+} from "firebase/firestore";
 
-// --- Helper to format a JS Date into "Month D, YYYY" (e.g. "May 6, 2025") ---
-function formatDateHuman(d: Date | null): string {
-  if (!d) return '—';
-  return d.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-}
+import type {
+  AppointmentDoc,
+  AppointmentRow,
+} from "../../types/appointment";
 
-// --- Parse a Firestore Timestamp or a custom string into a JS Date ---
-// If you already store a proper Firestore Timestamp, you can skip string parsing.
-function parseTimestampField(ts: unknown): Date | null {
+/**
+ * Parses a string like "2025-06-06 at 1:47:49 PM UTC+8":
+ *  1) Remove the " UTC…" suffix
+ *  2) Normalize U+202F to regular spaces
+ *  3) parse with "yyyy-MM-dd 'at' h:mm:ss a"
+ * Returns a Date if valid, otherwise null.
+ */
+function parseFirestoreTimestamp(ts: string | null | undefined): Date | null {
   if (!ts) return null;
-  if (ts instanceof Timestamp) {
-    return ts.toDate();
-  }
-  if (typeof ts === 'string') {
-    // Example string: "2025-03-28 at 10:00:00 AM UTC+8"
-    const [datePart, timeTzPart] = ts.split(' at ');
-    if (!datePart || !timeTzPart) return null;
-    const [timePart, tzPart] = (() => {
-      const idx = timeTzPart.lastIndexOf(' ');
-      return [timeTzPart.slice(0, idx), timeTzPart.slice(idx + 1)];
-    })();
-    const [hourMinSec, meridiem] = timePart.split(' ');
-    let [hh, mm, ss] = hourMinSec.split(':').map((x) => parseInt(x, 10));
-    if (meridiem === 'PM' && hh < 12) hh += 12;
-    if (meridiem === 'AM' && hh === 12) hh = 0;
 
-    const offsetMatch = tzPart.match(/UTC([+-]\d{1,2})(?::(\d{2}))?/);
-    let offset = '+00:00';
-    if (offsetMatch) {
-      const hoursOffset = offsetMatch[1].padStart(3, '0'); // e.g. "+08"
-      const minsOffset = offsetMatch[2] ?? '00';
-      offset = `${hoursOffset}:${minsOffset}`;
-    }
-
-    const isoString = `${datePart}T${hh.toString().padStart(2, '0')}:${mm
-      .toString()
-      .padStart(2, '0')}:${ss.toString().padStart(2, '0')}${offset}`;
-    const d = new Date(isoString);
-    return isNaN(d.getTime()) ? null : d;
+  try {
+    // 1) Drop everything from " UTC" onward
+    const [mainPart] = ts.split(" UTC");
+    // 2) Replace narrow no-break spaces (U+202F) with normal spaces
+    const normalized = mainPart.replace(/\u202F/g, " ");
+    // 3) parse with single-digit hour pattern (h:mm:ss a)
+    const parsed = parse(normalized, "yyyy-MM-dd 'at' h:mm:ss a", new Date());
+    return isValid(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
-type Appointment = {
-  id: string;
-  full_name: string;
-  service_type: string;
-  status: string;
-  time: number;
-  timestamp: unknown; // Firestore Timestamp or custom string
-  uid: string;
-  visit_type: string;
-};
+function mapDocToRow(id: string, data: AppointmentDoc): AppointmentRow {
+  // Assume data.timestamp is always a string like "2025-06-06 at 1:47:49 PM UTC+8"
+  const parsedDate = parseFirestoreTimestamp(
+    typeof data.timestamp === "string" ? data.timestamp : ""
+  );
+  let formattedDate = "";
+  let formattedTime = "";
 
-const Dashboard2: React.FC = () => {
-  const auth = getAuth();
-  const db = getFirestore();
+  if (parsedDate) {
+    formattedDate = format(parsedDate, "MM-dd-yy");
+    formattedTime = format(parsedDate, "h:mm a");
+  } else if (typeof data.time === "number") {
+    // Fallback if parsing fails
+    const fallback = new Date();
+    fallback.setHours(data.time, 0, 0, 0);
+    formattedTime = format(fallback, "h:mm a");
+  }
 
-  const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [sortOrder, setSortOrder] = useState<'Newest' | 'Oldest'>('Newest');
+  return {
+    id,
+    date: formattedDate,
+    time: formattedTime,
+    service: data.service_type,
+    visit: data.visit_type,
+    status: data.status,
+    full_name: data.full_name,
+  };
+}
 
-  // Modal state for “Reschedule”
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [apptToReschedule, setApptToReschedule] = useState<Appointment | null>(null);
-  const [newDate, setNewDate] = useState<string>(''); // "YYYY-MM-DD"
-  const [newTime, setNewTime] = useState<string>(''); // "HH:MM"
+const AppointmentFrag: React.FC = () => {
+  const [appointments, setAppointments] = useState<AppointmentRow[]>([]);
+  // Default to “today”; users can pick another date in the Calendar.
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
-  // 1) Subscribe to Firestore “appointments” for this user
   useEffect(() => {
-    const user = auth.currentUser;
-    if (!user) return;
-
-    const apptCol = collection(db, 'appointments');
-    const q = query(apptCol, where('uid', '==', user.uid));
-    const unsub = onSnapshot(q, (snap) => {
-      const list: Appointment[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as any;
-        list.push({
-          id: docSnap.id,
-          full_name: data.full_name,
-          service_type: data.service_type,
-          status: data.status,
-          time: data.time,
-          timestamp: data.timestamp,
-          uid: data.uid,
-          visit_type: data.visit_type,
+    const q = query(collection(db, "appointments"));
+    const unsubscribe = onSnapshot(
+      q,
+      (querySnap: QuerySnapshot<DocumentData>) => {
+        const rows: AppointmentRow[] = [];
+        querySnap.forEach((docSnap) => {
+          const data = docSnap.data() as AppointmentDoc;
+          rows.push(mapDocToRow(docSnap.id, data));
         });
-      });
-      setAppointments(list);
-    });
-    return () => unsub();
-  }, [auth, db]);
 
-  // 2) Derived values: last HIV test, suggested next, upcoming appointment
-  const lastHIVTestDate = appointments
-    .filter((a) => a.service_type === 'HIV Testing' && a.status === 'Completed')
-    .map((a) => parseTimestampField(a.timestamp))
-    .filter((d): d is Date => d instanceof Date)
-    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+        // Sort by date + time (lexical compare of "MM-dd-yy h:mm a")
+        rows.sort((a, b) => {
+          const aKey = a.date + " " + a.time;
+          const bKey = b.date + " " + b.time;
+          return aKey.localeCompare(bKey);
+        });
 
-  const suggestedNextTestDate = lastHIVTestDate
-    ? (() => {
-        const d = new Date(lastHIVTestDate);
-        d.setDate(d.getDate() + 90);
-        return d;
-      })()
-    : null;
+        setAppointments(rows);
+      },
+      (error) => {
+        console.error("Error fetching appointments:", error);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
 
-  const now = new Date();
-  const upcomingAppts = appointments
-    .map((a) => ({ appt: a, dt: parseTimestampField(a.timestamp) }))
-    .filter((x) => x.dt instanceof Date && x.dt.getTime() > now.getTime())
-    .sort((a, b) => a.dt!.getTime() - b.dt!.getTime());
+  // ─── Derive a “MM-dd-yy” key from the selected date ─────────────────────────────
+  const selectedKey = selectedDate ? format(selectedDate, "MM-dd-yy") : null;
 
-  const nextUpcomingApptDate = upcomingAppts.length > 0 ? upcomingAppts[0].dt! : null;
+  // ─── 1) How many appointments exactly on selectedDate ──────────────────────────
+  const appointmentsOnDateCount = useMemo(() => {
+    if (!selectedKey) return 0;
+    return appointments.filter((row) => row.date === selectedKey).length;
+  }, [appointments, selectedKey]);
 
-  // 3) Sort appointments for the table
-  const sortedAppointments = [...appointments].sort((a, b) => {
-    const da = parseTimestampField(a.timestamp);
-    const db = parseTimestampField(b.timestamp);
-    if (!da || !db) return 0;
-    return sortOrder === 'Newest'
-      ? db.getTime() - da.getTime()
-      : da.getTime() - db.getTime();
-  });
+  // ─── 2) How many walk-ins on selectedDate ──────────────────────────────────────
+  const walkInsOnDateCount = useMemo(() => {
+    if (!selectedKey) return 0;
+    return appointments.filter(
+      (row) => row.date === selectedKey && row.visit === "Walk-In"
+    ).length;
+  }, [appointments, selectedKey]);
 
-  // 4) Open modal & initialize fields
-  function openRescheduleModal(appt: Appointment) {
-    const dt = parseTimestampField(appt.timestamp);
-    if (dt) {
-      const yyyy = dt.getFullYear();
-      const mm = (dt.getMonth() + 1).toString().padStart(2, '0');
-      const dd = dt.getDate().toString().padStart(2, '0');
-      setNewDate(`${yyyy}-${mm}-${dd}`);
-      const hh = dt.getHours().toString().padStart(2, '0');
-      const min = dt.getMinutes().toString().padStart(2, '0');
-      setNewTime(`${hh}:${min}`);
-    } else {
-      setNewDate('');
-      setNewTime('');
-    }
-    setApptToReschedule(appt);
-    setIsModalOpen(true);
-  }
+  // ─── 3) How many “upcoming” on the day after selectedDate ───────────────────────
+  const upcomingOnNextDateCount = useMemo(() => {
+    if (!selectedDate) return 0;
+    const next = new Date(selectedDate);
+    next.setDate(next.getDate() + 1);
+    const nextKey = format(next, "MM-dd-yy");
+    return appointments.filter(
+      (row) => row.date === nextKey && row.status !== "Canceled"
+    ).length;
+  }, [appointments, selectedDate]);
 
-  // 5) Save new date/time back to Firestore
-  async function handleSaveReschedule() {
-    if (!apptToReschedule || !newDate || !newTime) return;
-    const [year, month, day] = newDate.split('-').map((x) => parseInt(x, 10));
-    const [hour, minute] = newTime.split(':').map((x) => parseInt(x, 10));
-    const newDt = new Date(year, month - 1, day, hour, minute);
-    const newFireTs = Timestamp.fromDate(newDt);
-
+  const handleStatusChange = async (docId: string, newStatus: string) => {
     try {
-      const docRef = doc(db, 'appointments', apptToReschedule.id);
-      await updateDoc(docRef, {
-        timestamp: newFireTs,
-        // Optionally: update a separate `time` field if you store minutes‐since‐midnight
-        // time: hour * 60 + minute,
-      });
-      setIsModalOpen(false);
-      setApptToReschedule(null);
-      setNewDate('');
-      setNewTime('');
+      const apptRef = firestoreDoc(db, "appointments", docId);
+      await updateDoc(apptRef, { status: newStatus });
     } catch (err) {
-      console.error('Error updating appointment:', err);
+      console.error("Error updating status:", err);
     }
-  }
-
-  // 6) Cancel the modal
-  function handleCancelModal() {
-    setIsModalOpen(false);
-    setApptToReschedule(null);
-    setNewDate('');
-    setNewTime('');
-  }
+  };
 
   return (
     <div className="space-y-10">
-      {/* ───── HEADER CARDS ───── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-10">
+      {/* ─── Dashboard Cards (now based on selectedDate) ──────────────────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
         <Card>
           <CardContent className="px-12 py-8">
-            <p className="text-lg font-semibold">Last HIV Test Date</p>
-            <p className="text-3xl font-semibold m-4">
-              {lastHIVTestDate ? formatDateHuman(lastHIVTestDate) : '—'}
+            <p className="text-xl font-semibold">
+              Appointments on{" "}
+              {selectedDate ? format(selectedDate, "PPP") : "—"}
             </p>
-            <p className="text-sm text-gray-500">Your most recent recorded HIV test date</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="px-12 py-8">
-            <p className="text-lg font-semibold">Suggested Next HIV Test Date</p>
-            <p className="text-3xl font-semibold m-4">
-              {suggestedNextTestDate ? formatDateHuman(suggestedNextTestDate) : '—'}
+            <p className="text-5xl font-semibold m-4">
+              {appointmentsOnDateCount}
             </p>
-            <p className="text-sm text-gray-500">
-              Suggested next test date based on the WHO’s 3-month guideline
+            <p className="text-md text-gray-500">
+              Number of appointments on this date
             </p>
           </CardContent>
         </Card>
-
         <Card>
           <CardContent className="px-12 py-8">
-            <p className="text-lg font-semibold">Upcoming Appointment</p>
-            <p className="text-3xl font-semibold m-4">
-              {nextUpcomingApptDate ? formatDateHuman(nextUpcomingApptDate) : '—'}
+            <p className="text-xl font-semibold">
+              Walk-Ins on{" "}
+              {selectedDate ? format(selectedDate, "PPP") : "—"}
             </p>
-            <p className="text-sm text-gray-500">
-              Stay prepared with your next scheduled visit
+            <p className="text-5xl font-semibold m-4">
+              {walkInsOnDateCount}
+            </p>
+            <p className="text-md text-gray-500">
+              Number of walk-in patients on this date
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="px-12 py-8">
+            <p className="text-xl font-semibold">
+              Upcoming (Next Day) Appointments
+            </p>
+            <p className="text-5xl font-semibold m-4">
+              {upcomingOnNextDateCount}
+            </p>
+            <p className="text-md text-gray-500">
+              Number of upcoming appointments on{" "}
+              {selectedDate
+                ? format(
+                    new Date(
+                      selectedDate.setDate(selectedDate.getDate())
+                    ),
+                    "PPP"
+                  )
+                : "—"}
             </p>
           </CardContent>
         </Card>
       </div>
 
-      {/* ───── TABLE WITH SORT + ACTIONS ───── */}
+      {/* ─── Calendar Picker + Table Header ───────────────────────────────────── */}
       <div className="overflow-auto bg-white shadow-[0_0_32px_4px_rgba(0,0,0,0.1)] rounded-2xl">
-        <div className="bg-red-500 text-white w-full rounded-md px-10 py-2 text-center text-md font-bold flex justify-between">
-          {/* SORT DROPDOWN */}
-          <div className="flex space-x-6 w-[33%]">
-            <div className="flex items-center text-sm hover:underline">
-              <Clock className="h-5 w-5" />
-              <div>
-                <Select
-                  onValueChange={(val) => setSortOrder(val as 'Newest' | 'Oldest')}
-                  defaultValue={sortOrder}
-                >
-                  <SelectTrigger className="w-full text-md space-x-2">
-                    <SelectValue placeholder={sortOrder} />
-                  </SelectTrigger>
-                  <SelectContent className="text-md">
-                    <SelectItem value="Newest">Newest</SelectItem>
-                    <SelectItem value="Oldest">Oldest</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+        <div className="bg-red-500 text-white rounded-md px-4 py-2 font-semibold flex justify-between items-center">
+          <div className="flex items-center gap-2 w-[33%]">
+            <Popover>
+              <PopoverTrigger asChild>
+                <button className="flex items-center gap-2 text-white text-md hover:underline">
+                  <CalendarIcon className="h-4 w-4" />
+                  {selectedDate
+                    ? format(selectedDate, "PPP")
+                    : "Pick a date"}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0 bg-white">
+                <Calendar
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={setSelectedDate}
+                  initialFocus
+                />
+              </PopoverContent>
+            </Popover>
           </div>
 
-          <div className="w-[33%] text-lg flex items-center justify-center">
-            Clinic Activity History
+          <div className="text-md font-bold w-[33%] text-center">
+            Appointments & Walk-In List
           </div>
-
-          {/* (Placeholder for a global actions dropdown—unused in this example) */}
-          <div className="w-[33%] flex justify-end items-center text-sm hover:underline">
-            <Logs className="h-5 w-5" />
-            <div>
-            </div>
-          </div>
+          <div className="text-md collapse w-[33%]">Edit Status</div>
         </div>
 
+        {/* ─── Table (filtered by selectedDate) ─────────────────────────────────┐ */}
         <div className="overflow-hidden rounded-md border border-gray-200">
           <div className="max-h-[700px] overflow-y-auto custom-scroll">
-            <table className="w-full text-sm table-fixed">
+            <table className="w-full text-md table-fixed">
               <thead className="bg-gray-100 sticky top-0 z-10">
                 <tr>
-                  <th className="p-3 text-center w-[2%]"></th>
-                  <th className="p-3 text-center w-[15%]">Appt ID</th>
-                  <th className="p-3 text-center w-[15%]">Date</th>
-                  <th className="p-3 text-center w-[15%]">Time</th>
-                  <th className="p-3 text-center w-[15%]">Service Type</th>
-                  <th className="p-3 text-center w-[15%]">Visit Type</th>
-                  <th className="p-3 text-center w-[15%]">Status</th>
+                  <th className="p-3 text-center w-[14.28%]">
+                    Appointment ID
+                  </th>
+                  <th className="p-3 text-center w-[14.28%]">Date</th>
+                  <th className="p-3 text-center w-[14.28%]">Time</th>
+                  <th className="p-3 text-center w-[14.28%]">Name</th>
+                  <th className="p-3 text-center w-[14.28%]">
+                    Service Type
+                  </th>
+                  <th className="p-3 text-center w-[14.28%]">Visit Type</th>
+                  <th className="p-3 text-center w-[14.28%]">Status</th>
                 </tr>
               </thead>
+
               <tbody>
-                {sortedAppointments.map((appt) => {
-                  const dt = parseTimestampField(appt.timestamp);
-                  return (
+                {appointments
+                  .filter((row) => row.date === selectedKey)
+                  .map((appt) => (
                     <tr key={appt.id} className="border-b">
-                      <td className="p-3 text-center">
-                        <PenBox 
-                          className='w-5 h-5 hover:cursor-pointer hover:scale-[102%] text-gray-500'
-                          onClick={() => openRescheduleModal(appt)}/>
-                      </td>
                       <td className="p-3 text-center">{appt.id}</td>
+                      <td className="p-3 text-center">{appt.date}</td>
+                      <td className="p-3 text-center">{appt.time}</td>
+                      <td className="p-3 text-center">{appt.full_name}</td>
+                      <td className="p-3 text-center">{appt.service}</td>
+                      <td className="p-3 text-center">{appt.visit}</td>
                       <td className="p-3 text-center">
-                        {dt ? dt.toLocaleDateString('en-CA') : '—'}
+                        <Select
+                          value={appt.status}
+                          onValueChange={(val) =>
+                            handleStatusChange(appt.id, val)
+                          }
+                        >
+                          <SelectTrigger className="w-full text-md">
+                            <SelectValue placeholder="Select status" />
+                          </SelectTrigger>
+                          <SelectContent className="text-md">
+                            <SelectItem value="Upcoming">Upcoming</SelectItem>
+                            <SelectItem value="On-Going">In-Progress</SelectItem>
+                            <SelectItem value="Completed">Completed</SelectItem>
+                            <SelectItem value="Canceled">Canceled</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </td>
-                      <td className="p-3 text-center">
-                        {dt
-                          ? dt.toLocaleTimeString('en-US', {
-                              hour: 'numeric',
-                              minute: 'numeric',
-                              hour12: true,
-                            })
-                          : '—'}
-                      </td>
-                      <td className="p-3 text-center">{appt.service_type}</td>
-                      <td className="p-3 text-center">{appt.visit_type}</td>
-                      <td className="p-3 text-center">{appt.status}</td>
                     </tr>
-                  );
-                })}
+                  ))}
+                {appointments.filter((row) => row.date === selectedKey)
+                  .length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="p-4 text-center text-gray-500 italic"
+                    >
+                      No appointments found for this date.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
+        {/* ─────────────────────────────────────────────────────────────────────┘ */}
       </div>
-
-      {/* ───── CUSTOM MODAL FOR RESCHEDULING ───── */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-2xl shadow-lg w-96 p-6">
-            <h2 className="text-xl font-semibold mb-4">
-              Reschedule Appointment{' '}
-              <span className="font-mono text-sm">{apptToReschedule?.id}</span>
-            </h2>
-
-            <div className="space-y-4">
-              <div>
-                <label htmlFor="date-input" className="block text-sm font-medium text-gray-700">
-                  New Date
-                </label>
-                <input
-                  id="date-input"
-                  type="date"
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
-                  value={newDate}
-                  onChange={(e) => setNewDate(e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="time-input" className="block text-sm font-medium text-gray-700">
-                  New Time
-                </label>
-                <input
-                  id="time-input"
-                  type="time"
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
-                  value={newTime}
-                  onChange={(e) => setNewTime(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex justify-end space-x-3">
-              <button
-                onClick={handleCancelModal}
-                className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveReschedule}
-                className="px-4 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
 
-export default Dashboard2;
+export default AppointmentFrag;

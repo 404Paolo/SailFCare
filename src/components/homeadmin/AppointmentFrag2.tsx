@@ -18,7 +18,7 @@ import {
   PopoverTrigger,
 } from "../../components/ui/popover";
 import { Calendar } from "../../components/ui/calendar";
-import { format, parse } from "date-fns";
+import { format, parse, isValid } from "date-fns";
 import { CalendarIcon } from "lucide-react";
 
 import { db } from "../../firebase";
@@ -30,6 +30,7 @@ import {
   DocumentData,
   doc as firestoreDoc,
   updateDoc,
+  Timestamp as FirestoreTimestamp,
 } from "firebase/firestore";
 
 import type {
@@ -37,17 +38,68 @@ import type {
   AppointmentRow,
 } from "../../types/appointment";
 
-function parseFirestoreTimestamp(ts: string): Date | null {
-  try {
-    const [mainPart] = ts.split(" UTC");
-    return parse(mainPart, "yyyy-MM-dd 'at' hh:mm:ss a", new Date());
-  } catch {
+/**
+ * Accepts either:
+ *   • A Firestore Timestamp object  (Timestamp)
+ *   • A string in one of two formats:
+ *       1) "yyyy-MM-dd 'at' hh:mm:ss a"       (e.g. "2025-05-28 at 05:00:00 PM")
+ *       2) "MMMM d, yyyy 'at' h:mm:ss a"      (e.g. "June 1, 2025 at 1:43:00 PM")
+ *
+ * Returns a JS Date if parsing succeeds, otherwise null.
+ */
+function parseFirestoreTimestamp(
+  ts: string | FirestoreTimestamp | null | undefined
+): Date | null {
+  if (!ts) {
     return null;
   }
+
+  // 1) If it's already a Firestore Timestamp, just convert:
+  if (
+    typeof ts === "object" &&
+    // Firestore Timestamp has a .toDate() method
+    typeof (ts as FirestoreTimestamp).toDate === "function"
+  ) {
+    return (ts as FirestoreTimestamp).toDate();
+  }
+
+  // 2) Otherwise, assume it's a string
+  if (typeof ts === "string") {
+    try {
+      // Remove any " UTC+…" suffix (e.g. " UTC+8")
+      const [mainPart] = ts.split(" UTC");
+      // Normalize narrow no-break spaces (U+202F) to ordinary spaces
+      const normalized = mainPart.replace(/\u202F/g, " ");
+
+      // First attempt: "2025-05-28 at 05:00:00 PM"
+      let parsed = parse(
+        normalized,
+        "yyyy-MM-dd 'at' hh:mm:ss a",
+        new Date()
+      );
+
+      if (!isValid(parsed)) {
+        // Fallback: "June 1, 2025 at 1:43:00 PM"
+        parsed = parse(
+          normalized,
+          "MMMM d, yyyy 'at' h:mm:ss a",
+          new Date()
+        );
+      }
+
+      return isValid(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // If it's neither a string nor a Firestore Timestamp, bail:
+  return null;
 }
 
 function mapDocToRow(id: string, data: AppointmentDoc): AppointmentRow {
-  const parsedDate = parseFirestoreTimestamp(data.timestamp);
+  const rawTs = (data.timestamp as unknown) as string | FirestoreTimestamp;
+  const parsedDate = parseFirestoreTimestamp(rawTs);
   let formattedDate = "";
   let formattedTime = "";
 
@@ -55,6 +107,7 @@ function mapDocToRow(id: string, data: AppointmentDoc): AppointmentRow {
     formattedDate = format(parsedDate, "MM-dd-yy");
     formattedTime = format(parsedDate, "h:mm a");
   } else if (typeof data.time === "number") {
+    // Fallback to a numeric hour field if timestamp parsing failed
     const fallback = new Date();
     fallback.setHours(data.time, 0, 0, 0);
     formattedTime = format(fallback, "h:mm a");
@@ -87,7 +140,7 @@ const AppointmentFrag: React.FC = () => {
           rows.push(mapDocToRow(docSnap.id, data));
         });
 
-        // Sort by date + time (optional)
+        // Sort by date + time (lexical compare of "MM-dd-yy h:mm a")
         rows.sort((a, b) => {
           const aKey = a.date + " " + a.time;
           const bKey = b.date + " " + b.time;

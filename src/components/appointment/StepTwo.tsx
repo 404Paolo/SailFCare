@@ -26,6 +26,16 @@ const StepTwo: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }) 
     slotDateTime.setHours(hour24, parseInt(minute), 0, 0);
     return isBefore(slotDateTime, addHours(new Date(), 1));
   };
+  
+  const formatDateTime = (dateStr: string, timeStr: string): string => {
+  const now = new Date();
+    const fullDate = new Date(`${now.getFullYear()} ${dateStr} ${timeStr}`);
+
+    const formattedDate = format(fullDate, "yyyy-MM-dd");
+    const formattedTime = format(fullDate, "hh:mm:ss a");
+
+    return `${formattedDate} at ${formattedTime} UTC+8`;
+  };
 
   const handleNextDays = () => {
     if (startIndex + 2 < upcomingDates.length) setStartIndex(startIndex + 2);
@@ -37,12 +47,24 @@ const StepTwo: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }) 
 
   const handleDateSelect = (date: string) => {
     setSelectedDate(date);
-    updateFormData({ date });
+
+    if (selectedTime) {
+      const formatted = formatDateTime(date, selectedTime);
+      updateFormData({ date, formattedDateTime: formatted });
+    } else {
+      updateFormData({ date });
+    }
   };
 
   const handleTimeSelect = (time: string) => {
     setSelectedTime(time);
-    updateFormData({ time });
+
+    if (selectedDate) {
+      const formatted = formatDateTime(selectedDate, time);
+      updateFormData({ time, formattedDateTime: formatted });
+    } else {
+      updateFormData({ time });
+    }
   };
 
   const handleDoctorSelect = (doctor: string) => {
