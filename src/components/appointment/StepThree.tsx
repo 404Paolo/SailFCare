@@ -8,7 +8,7 @@ interface Props {
   formData: any;
 }
 
-const StepFour: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }) => {
+const StepThree: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }) => {
   const appointmentType = appointmentTypes[formData.subOption];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -81,12 +81,12 @@ const StepFour: React.FC<Props> = ({ onNext, onBack, updateFormData, formData })
 
       {["Start your PrEP", "PrEP Refill Pickup"].includes(formData.subOption) && (
         <div className="p-10 bg-white shadow-lg rounded-xl overflow-hidden">
-          <h3 className="text-2xl pb-6 font-semibold mb-6 border-b border-[black]">Creatinine Test Result<span className="float-right font-normal text-gray-500 text-[16px]">Optional</span></h3>
+          <h3 className="text-lg pb-6 font-semibold mb-6 border-b border-[black]">Creatinine Test Result<span className="float-right font-normal text-gray-500 text-[16px]">Optional</span></h3>
           <div className="flex flex-col items-start gap-4 py-4">
-            <p className="text-gray-600 mb-12">
+            <p className="text-gray-600 text-sm mb-8">
               If you want to fast track your PreP visit, you can do the Creatinine Test at your own time before your visit.<br/><br/>Just upload the result when you book this appointment with us.
             </p>
-            <button className="bg-red-500 rounded-xl text-white text-lg px-10 py-2">
+            <button className="bg-red-500 rounded-xl text-white text-sm px-10 py-2">
               Upload Result
             </button>
           </div>
@@ -96,8 +96,8 @@ const StepFour: React.FC<Props> = ({ onNext, onBack, updateFormData, formData })
 
       {["Start your HIV Treatment", "Start your PrEP", "ARV Refill Pickup", "PrEP Refill Pickup"].includes(formData.subOption) && (
         <div className="p-10 bg-white shadow-lg rounded-lg overflow-hidden">
-          <h3 className="text-2xl pb-6 font-semibold mb-6 border-b border-[black]">Referral<span className="float-right font-normal text-gray-500 text-[16px]">Optional</span></h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-4 border-[black]">
+          <h3 className="text-md pb-6 font-semibold mb-6 border-b border-[black]">Referral<span className="float-right font-normal text-gray-500 text-[16px]">Optional</span></h3>
+          <div className="text-sm grid grid-cols-1 md:grid-cols-2 gap-6 py-4 border-[black]">
             <input
               type="text"
               name="referralCode"
@@ -138,4 +138,4 @@ const StepFour: React.FC<Props> = ({ onNext, onBack, updateFormData, formData })
   );
 };
 
-export default StepFour;
+export default StepThree;

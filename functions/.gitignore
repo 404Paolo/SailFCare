@@ -1,0 +1,37 @@
+# Compiled JavaScript files
+lib/**/*.js
+lib/**/*.js.map
+
+# TypeScript v1 declaration files
+typings/
+
+# Node.js dependency directory
+node_modules/
+*.local
+
+# ─────────────────────────────────────────────────────────────
+# 1) Dependencies & build outputs
+node_modules/
+dist/
+.vite/
+
+# 2) Local env & editor files
+.env.local
+.env.*.local
+.DS_Store
+*.log
+
+# 3) Firebase CLI cache / tokens
+.firebase/
+.firebase-tools.json
+
+# 4) Service account (keep this file private!)
+sailfcare-c8e45-firebase-adminsdk-fbsvc-fd11b72c29.json
+# (or whichever filename your JSON uses)
+
+# 5) Optional: coverage, build reports, etc.
+coverage/
+reports/
+
+# 6) If you ever generate TypeScript build artifacts:
+*.tsbuildinfo

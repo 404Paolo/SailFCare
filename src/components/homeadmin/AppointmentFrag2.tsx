@@ -1,64 +1,201 @@
-import { useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
-import { format } from "date-fns";
+"use client";
+
+import { useState, useEffect, useMemo } from "react";
+import {
+  Card,
+  CardContent,
+} from "../../components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "../../components/ui/popover";
+import { Calendar } from "../../components/ui/calendar";
+import { format, parse } from "date-fns";
 import { CalendarIcon } from "lucide-react";
 
-const appointmentsToday = 29;
-const walkInsToday = 3;
-const upcomingAppointments = 31;
+import { db } from "../../firebase";
+import {
+  collection,
+  query,
+  onSnapshot,
+  QuerySnapshot,
+  DocumentData,
+  doc as firestoreDoc,
+  updateDoc,
+} from "firebase/firestore";
 
-const appointmentData = [
-  { id: "050625-0001", date: "05-06-25", time: "1:00 pm", service: "Consultation", visit: "Scheduled", status: "Completed" },
-  { id: "050625-0002", date: "05-06-25", time: "1:00 pm", service: "HIV Testing", visit: "Walk-In", status: "Completed" },
-  { id: "050625-0003", date: "05-06-25", time: "1:00 pm", service: "Lab Testing", visit: "Scheduled", status: "Completed" },
-  { id: "050625-0004", date: "05-06-25", time: "1:30 pm", service: "HIV Testing", visit: "Scheduled", status: "On-going" },
-  { id: "050625-0005", date: "05-06-25", time: "2:00 pm", service: "Consultation", visit: "Scheduled", status: "On-going" },
-  { id: "050625-0006", date: "05-06-25", time: "2:00 pm", service: "HIV Testing", visit: "Walk-In", status: "Upcoming" },
-  { id: "050625-0007", date: "05-06-25", time: "2:30 pm", service: "PrEP Refill", visit: "Scheduled", status: "Upcoming" },
-  { id: "050625-0008", date: "05-06-25", time: "2:30 pm", service: "Start PrEP", visit: "Scheduled", status: "Upcoming" },
-  { id: "050625-0009", date: "05-06-25", time: "3:00 pm", service: "Start ARV", visit: "Scheduled", status: "Upcoming" },
-  { id: "050625-0010", date: "05-06-25", time: "3:30 pm", service: "Lab Testing", visit: "Walk-In", status: "Upcoming" },
-];
+import type {
+  AppointmentDoc,
+  AppointmentRow,
+} from "../../types/appointment";
 
-const AppointmentFrag = () => {
-  const [appointments, setAppointments] = useState(appointmentData);
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date(2025, 4, 6)); // May 6, 2025
+function parseFirestoreTimestamp(ts: string): Date | null {
+  try {
+    const [mainPart] = ts.split(" UTC");
+    return parse(mainPart, "yyyy-MM-dd 'at' hh:mm:ss a", new Date());
+  } catch {
+    return null;
+  }
+}
 
-  const handleStatusChange = (index: number, newStatus: string) => {
-    const updated = [...appointments];
-    updated[index].status = newStatus;
-    setAppointments(updated);
+function mapDocToRow(id: string, data: AppointmentDoc): AppointmentRow {
+  const parsedDate = parseFirestoreTimestamp(data.timestamp);
+  let formattedDate = "";
+  let formattedTime = "";
+
+  if (parsedDate) {
+    formattedDate = format(parsedDate, "MM-dd-yy");
+    formattedTime = format(parsedDate, "h:mm a");
+  } else if (typeof data.time === "number") {
+    const fallback = new Date();
+    fallback.setHours(data.time, 0, 0, 0);
+    formattedTime = format(fallback, "h:mm a");
+  }
+
+  return {
+    id,
+    date: formattedDate,
+    time: formattedTime,
+    service: data.service_type,
+    visit: data.visit_type,
+    status: data.status,
+    full_name: data.full_name,
+  };
+}
+
+const AppointmentFrag: React.FC = () => {
+  const [appointments, setAppointments] = useState<AppointmentRow[]>([]);
+  // Default to “today”; users can pick another date in the Calendar.
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+
+  useEffect(() => {
+    const q = query(collection(db, "appointments"));
+    const unsubscribe = onSnapshot(
+      q,
+      (querySnap: QuerySnapshot<DocumentData>) => {
+        const rows: AppointmentRow[] = [];
+        querySnap.forEach((docSnap) => {
+          const data = docSnap.data() as AppointmentDoc;
+          rows.push(mapDocToRow(docSnap.id, data));
+        });
+
+        // Sort by date + time (optional)
+        rows.sort((a, b) => {
+          const aKey = a.date + " " + a.time;
+          const bKey = b.date + " " + b.time;
+          return aKey.localeCompare(bKey);
+        });
+
+        setAppointments(rows);
+      },
+      (error) => {
+        console.error("Error fetching appointments:", error);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // ─── Derive a “MM-dd-yy” key from the selected date ─────────────────────────────
+  const selectedKey = selectedDate ? format(selectedDate, "MM-dd-yy") : null;
+
+  // ─── 1) How many appointments exactly on selectedDate ──────────────────────────
+  const appointmentsOnDateCount = useMemo(() => {
+    if (!selectedKey) return 0;
+    return appointments.filter((row) => row.date === selectedKey).length;
+  }, [appointments, selectedKey]);
+
+  // ─── 2) How many walk-ins on selectedDate ──────────────────────────────────────
+  const walkInsOnDateCount = useMemo(() => {
+    if (!selectedKey) return 0;
+    return appointments.filter(
+      (row) => row.date === selectedKey && row.visit === "Walk-In"
+    ).length;
+  }, [appointments, selectedKey]);
+
+  // ─── 3) How many “upcoming” on the day after selectedDate ───────────────────────
+  const upcomingOnNextDateCount = useMemo(() => {
+    if (!selectedDate) return 0;
+    const next = new Date(selectedDate);
+    next.setDate(next.getDate() + 1);
+    const nextKey = format(next, "MM-dd-yy");
+    return appointments.filter(
+      (row) => row.date === nextKey && row.status !== "Canceled"
+    ).length;
+  }, [appointments, selectedDate]);
+
+  const handleStatusChange = async (docId: string, newStatus: string) => {
+    try {
+      const apptRef = firestoreDoc(db, "appointments", docId);
+      await updateDoc(apptRef, { status: newStatus });
+    } catch (err) {
+      console.error("Error updating status:", err);
+    }
   };
 
   return (
     <div className="space-y-10">
+      {/* ─── Dashboard Cards (now based on selectedDate) ──────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
         <Card>
           <CardContent className="px-12 py-8">
-            <p className="text-xl font-semibold">Appointments Today</p>
-            <p className="text-5xl font-semibold m-4">{appointmentsToday}</p>
-            <p className="text-md text-gray-500">Number of appointments today</p>
+            <p className="text-xl font-semibold">
+              Appointments on{" "}
+              {selectedDate ? format(selectedDate, "PPP") : "—"}
+            </p>
+            <p className="text-5xl font-semibold m-4">
+              {appointmentsOnDateCount}
+            </p>
+            <p className="text-md text-gray-500">
+              Number of appointments on this date
+            </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="px-12 py-8">
-            <p className="text-xl font-semibold">Walk-In Today</p>
-            <p className="text-5xl font-semibold m-4">{walkInsToday}</p>
-            <p className="text-md text-gray-500">Number of walk-in patients today</p>
+            <p className="text-xl font-semibold">
+              Walk-Ins on{" "}
+              {selectedDate ? format(selectedDate, "PPP") : "—"}
+            </p>
+            <p className="text-5xl font-semibold m-4">
+              {walkInsOnDateCount}
+            </p>
+            <p className="text-md text-gray-500">
+              Number of walk-in patients on this date
+            </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="px-12 py-8">
-            <p className="text-xl font-semibold">Upcoming Appointments</p>
-            <p className="text-5xl font-semibold m-4">{upcomingAppointments}</p>
-            <p className="text-md text-gray-500">Number of upcoming appointments tomorrow</p>
+            <p className="text-xl font-semibold">
+              Upcoming (Next Day) Appointments
+            </p>
+            <p className="text-5xl font-semibold m-4">
+              {upcomingOnNextDateCount}
+            </p>
+            <p className="text-md text-gray-500">
+              Number of upcoming appointments on{" "}
+              {selectedDate
+                ? format(
+                    new Date(
+                      selectedDate.setDate(selectedDate.getDate())
+                    ),
+                    "PPP"
+                  )
+                : "—"}
+            </p>
           </CardContent>
         </Card>
       </div>
 
+      {/* ─── Calendar Picker + Table Header ───────────────────────────────────── */}
       <div className="overflow-auto bg-white shadow-[0_0_32px_4px_rgba(0,0,0,0.1)] rounded-2xl">
         <div className="bg-red-500 text-white rounded-md px-4 py-2 font-semibold flex justify-between items-center">
           <div className="flex items-center gap-2 w-[33%]">
@@ -66,59 +203,95 @@ const AppointmentFrag = () => {
               <PopoverTrigger asChild>
                 <button className="flex items-center gap-2 text-white text-md hover:underline">
                   <CalendarIcon className="h-4 w-4" />
-                  {selectedDate ? format(selectedDate, "PPP") : "Pick a date"}
+                  {selectedDate
+                    ? format(selectedDate, "PPP")
+                    : "Pick a date"}
                 </button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0 bg-white">
-                <Calendar mode="single" selected={selectedDate} onSelect={setSelectedDate} initialFocus />
+                <Calendar
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={setSelectedDate}
+                  initialFocus
+                />
               </PopoverContent>
             </Popover>
           </div>
-          <div className="text-md font-bold w-[33%] text-center">Appointments & Walk-in List</div>
+
+          <div className="text-md font-bold w-[33%] text-center">
+            Appointments & Walk-In List
+          </div>
           <div className="text-md collapse w-[33%]">Edit Status</div>
         </div>
+
+        {/* ─── Table (filtered by selectedDate) ─────────────────────────────────┐ */}
         <div className="overflow-hidden rounded-md border border-gray-200">
           <div className="max-h-[700px] overflow-y-auto custom-scroll">
             <table className="w-full text-md table-fixed">
               <thead className="bg-gray-100 sticky top-0 z-10">
                 <tr>
-                  <th className="p-3 text-center w-[14.28%]">Appointment ID</th>
+                  <th className="p-3 text-center w-[14.28%]">
+                    Appointment ID
+                  </th>
                   <th className="p-3 text-center w-[14.28%]">Date</th>
                   <th className="p-3 text-center w-[14.28%]">Time</th>
                   <th className="p-3 text-center w-[14.28%]">Name</th>
-                  <th className="p-3 text-center w-[14.28%]">Service Type</th>
+                  <th className="p-3 text-center w-[14.28%]">
+                    Service Type
+                  </th>
                   <th className="p-3 text-center w-[14.28%]">Visit Type</th>
                   <th className="p-3 text-center w-[14.28%]">Status</th>
                 </tr>
               </thead>
+
               <tbody>
-                {appointments.map((appt, index) => (
-                  <tr key={appt.id} className="border-b">
-                    <td className="p-3 text-center">{appt.id}</td>
-                    <td className="p-3 text-center">{appt.date}</td>
-                    <td className="p-3 text-center">{appt.time}</td>
-                    <td className="p-3 text-center">First Name Surname</td>
-                    <td className="p-3 text-center">{appt.service}</td>
-                    <td className="p-3 text-center">{appt.visit}</td>
-                    <td className="p-3 text-center">
-                      <Select value={appt.status} onValueChange={(val) => handleStatusChange(index, val)}>
-                        <SelectTrigger className="w-full text-md">
-                          <SelectValue placeholder="Select status" />
-                        </SelectTrigger>
-                        <SelectContent className="text-md">
-                          <SelectItem value="Upcoming">Upcoming</SelectItem>
-                          <SelectItem value="On-going">In-Progress</SelectItem>
-                          <SelectItem value="Completed">Completed</SelectItem>
-                          <SelectItem value="Canceled">Canceled</SelectItem>
-                        </SelectContent>
-                      </Select>
+                {appointments
+                  .filter((row) => row.date === selectedKey)
+                  .map((appt) => (
+                    <tr key={appt.id} className="border-b">
+                      <td className="p-3 text-center">{appt.id}</td>
+                      <td className="p-3 text-center">{appt.date}</td>
+                      <td className="p-3 text-center">{appt.time}</td>
+                      <td className="p-3 text-center">{appt.full_name}</td>
+                      <td className="p-3 text-center">{appt.service}</td>
+                      <td className="p-3 text-center">{appt.visit}</td>
+                      <td className="p-3 text-center">
+                        <Select
+                          value={appt.status}
+                          onValueChange={(val) =>
+                            handleStatusChange(appt.id, val)
+                          }
+                        >
+                          <SelectTrigger className="w-full text-md">
+                            <SelectValue placeholder="Select status" />
+                          </SelectTrigger>
+                          <SelectContent className="text-md">
+                            <SelectItem value="Upcoming">Upcoming</SelectItem>
+                            <SelectItem value="On-Going">In-Progress</SelectItem>
+                            <SelectItem value="Completed">Completed</SelectItem>
+                            <SelectItem value="Canceled">Canceled</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </td>
+                    </tr>
+                  ))}
+                {appointments.filter((row) => row.date === selectedKey)
+                  .length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="p-4 text-center text-gray-500 italic"
+                    >
+                      No appointments found for this date.
                     </td>
                   </tr>
-                ))}
+                )}
               </tbody>
             </table>
           </div>
         </div>
+        {/* ─────────────────────────────────────────────────────────────────────┘ */}
       </div>
     </div>
   );

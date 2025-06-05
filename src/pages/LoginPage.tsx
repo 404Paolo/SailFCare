@@ -1,40 +1,87 @@
-import { useState } from 'react';
-// import { signInWithEmailAndPassword, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { signInWithEmailAndPassword} from 'firebase/auth';
-import { auth } from '../firebase';
-import { useNavigate } from 'react-router-dom';
-import logo from '../assets/saillogo.png';
-import { Link } from 'react-router-dom';
-import Navbar from '@/components/NavBar';
+// src/pages/LoginPage.tsx
+import { useState } from "react";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth, db } from "../firebase.ts";
+import { useNavigate, useLocation } from "react-router-dom";
+import { doc, updateDoc } from "firebase/firestore";
+import { createAppointment } from "../utils/createAppointment";
 
+import logo from "../assets/saillogo.png";
+import { Link } from "react-router-dom";
+import Navbar from "../components/NavBar";
+
+interface LocationState {
+  assessmentData?: Record<string, { response: string; score: number }>;
+  appointmentData?: {
+    firstName: string;
+    lastName: string;
+    subOption: string;
+    appointmentType: string;
+    date: string;
+    time: string;
+    // …any other fields you passed from StepFourModal
+  };
+}
 
 const LoginPage = () => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+  const state = (location.state as LocationState) || {};
+  const { assessmentData, appointmentData } = state;
 
   const login = async () => {
+    setLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      navigate('/home');
+      // 1. Sign in
+      const userCred = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCred.user;
+
+      // 2. If “assessmentData” was passed, write it to Firestore:
+      if (assessmentData) {
+        try {
+          const userDocRef = doc(db, "users", user.uid);
+          await updateDoc(userDocRef, {
+            assessmentRecord: assessmentData,
+          });
+        } catch (err) {
+          console.error("Failed to write assessmentData after login:", err);
+          // we don’t block navigation if this fails
+        }
+      }
+
+      // 3. If “appointmentData” was passed, write that appointment now:
+      if (appointmentData) {
+        try {
+          await createAppointment(user.uid, {
+            firstName: appointmentData.firstName,
+            lastName: appointmentData.lastName,
+            subOption: appointmentData.subOption,
+            appointmentType: appointmentData.appointmentType,
+            date: appointmentData.date,
+            time: appointmentData.time,
+          });
+        } catch (err) {
+          console.error("Failed to write appointment after login:", err);
+          // Optionally show an alert—then still navigate to /home
+          alert("Could not finalize your appointment. Please try again later.");
+        }
+      }
+
+      // 4. Navigate to “/home”
+      navigate("/home");
     } catch (err) {
-      alert('Login failed');
+      alert("Login failed: " + (err as any).message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  // const loginWithGoogle = async () => {
-  //   const provider = new GoogleAuthProvider();
-  //   try {
-  //     await signInWithPopup(auth, provider);
-  //     navigate('/role');
-  //   } catch (err) {
-  //     alert('Google Sign-in failed');
-  //   }
-  // };
-
   return (
-    <div className="flex flex-col min-h-screen  bg-[#F6F6F3]">
-      <Navbar/>
+    <div className="flex flex-col min-h-screen bg-[#F6F6F3]">
+      <Navbar />
       <div className="flex flex-1 items-center justify-center">
         <div className="bg-white p-10 rounded-2xl shadow-lg w-full max-w-md text-center">
           <img src={logo} alt="SAIL logo" className="w-20 mx-auto mb-4" />
@@ -52,41 +99,31 @@ const LoginPage = () => {
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full p-3 mb-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-300"
+            className="w-full p-3 mb-4 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-300"
           />
-
-          <div className="text-right text-sm text-red-400 hover:underline cursor-pointer mb-6">
-            Forgot Password
-          </div>
 
           <button
             onClick={login}
-            className="w-full bg-red-500 text-white font-medium py-3 rounded-xl hover:bg-red-600 transition"
+            disabled={loading}
+            className={`w-full ${
+              loading ? "bg-red-300" : "bg-red-500 hover:bg-red-600"
+            } text-white font-medium py-3 rounded-xl transition`}
           >
-            Log In
+            {loading ? "Logging In..." : "Log In"}
           </button>
 
-          {/* <div className="my-6 flex items-center">
-            <div className="flex-grow h-px bg-gray-300"></div>
-            <span className="mx-2 text-gray-500 text-sm">or</span>
-            <div className="flex-grow h-px bg-gray-300"></div>
-          </div> */}
-
-          {/* <button
-            onClick={loginWithGoogle}
-            className="w-full border border-gray-300 flex items-center justify-center py-3 rounded-md hover:bg-gray-50 transition"
-          >
-            <img
-              src="https://upload.wikimedia.org/wikipedia/commons/thumb/5/53/Google_%22G%22_Logo.svg/512px-Google_%22G%22_Logo.svg.png"
-              alt="Google logo"
-              className="w-5 h-5 mr-2"
-            />
-            Log In with Google
-          </button> */}
-
           <div className="text-sm text-gray-500 mt-6">
-            <Link to="/register">
-              New patient? <span className="text-red-400 hover:underline cursor-pointer hover: text-red-600">Create your account</span>
+            New patient?{" "}
+            <Link
+              to="/register"
+              state={
+                assessmentData || appointmentData
+                  ? { assessmentData, appointmentData }
+                  : undefined
+              }
+              className="text-red-400 hover:underline"
+            >
+              Create your account
             </Link>
           </div>
         </div>

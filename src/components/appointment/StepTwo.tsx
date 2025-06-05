@@ -9,7 +9,7 @@ interface Props {
   formData: any;
 }
 
-const StepThree: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }) => {
+const StepTwo: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }) => {
   const [selectedTime, setSelectedTime] = useState(formData.time || "");
   const [selectedDate, setSelectedDate] = useState(formData.date || "");
   const [selectedDoctor, setSelectedDoctor] = useState(formData.appointmentDoctor);
@@ -172,4 +172,4 @@ const StepThree: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }
   );
 };
 
-export default StepThree;
+export default StepTwo;
