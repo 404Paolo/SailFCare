@@ -130,8 +130,7 @@ const StepThree: React.FC<Props> = ({ onNext, onBack, updateFormData, formData }
 
       <div className="flex justify-between space-x-10 mt-8">
         <button onClick={onBack} className="text-sm bg-white shadow px-4 py-1 border-2px rounded text-gray-700">Back</button>
-        <button onClick={() => {
-          if (confirm("Confirm Appointment?")) onNext();
+        <button onClick={() => {onNext();
         }} className="text-sm bg-red-500 text-white px-6 py-2 rounded hover:bg-red-600">Confirm Appointment</button>
       </div>
     </div>

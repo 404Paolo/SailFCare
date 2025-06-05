@@ -68,7 +68,11 @@ const StepFourModal: React.FC<Props> = ({ onBack, formData }) => {
               Want to save this appointment to your account and view your booking history?
             </p>
             <button
-              onClick={handleConfirm}
+              onClick={() => {
+                handleConfirm();
+                onBack();
+                alert("Appointment Successfully Created!")
+              }}
               disabled={isSubmitting}
               className={`text-lg px-4 py-2 rounded-xl bg-red-500 text-white font-semibold ${
                 isSubmitting ? "opacity-50 cursor-not-allowed" : "hover:bg-red-600"

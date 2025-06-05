@@ -2,7 +2,13 @@
 import { useState } from "react";
 import { auth, db } from "../firebase";
 import { createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc, updateDoc } from "firebase/firestore";
+import {
+  doc,
+  setDoc,
+  updateDoc,
+  getDocs,
+  collection,
+} from "firebase/firestore";
 import { useNavigate, useLocation } from "react-router-dom";
 import { createAppointment } from "../utils/createAppointment";
 
@@ -31,6 +37,14 @@ const RegisterPage = () => {
     email: "",
     password: "",
     confirmPassword: "",
+    // If you plan to collect additional “patients” fields (address, birth_date, etc.),
+    // you can expand your form state here. For now, we’ll leave them blank/optional:
+    address: "",            // <-- e.g. “1690 Quezon Ave, Quezon City”
+    birthDate: "",          // <-- e.g. “January 12, 1975 at 12:00:00 AM UTC+8”
+    emergencyContact: "",   // <-- e.g. “09967249716”
+    gender: "",             // <-- e.g. “Male” or “Female”
+    insuranceProvider: "",  // <-- e.g. “PhilHealth” or blank
+    sex: "",                // <-- often same as gender, but keeping as separate field if needed
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -74,6 +88,12 @@ const RegisterPage = () => {
     } else if (form.password !== form.confirmPassword) {
       newErrors.confirmPassword = "Passwords do not match";
     }
+
+    // If you decide to make address or birthDate required, add checks here, e.g.:
+    // if (!form.address.trim()) {
+    //   newErrors.address = "Address is required";
+    // }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -109,7 +129,64 @@ const RegisterPage = () => {
         createdAt: new Date().toISOString(),
       });
 
-      // 3) If “assessmentData” was passed, merge it now:
+      // ─────────────────────────────────────────
+      // 3) ALSO create a new “patients” document
+      //    • The doc ID = (current collection size) + 1, e.g. “100”.
+      //    • We pull in whichever fields we have in `form`. If you want to store
+      //      more (address, birth_date, etc.), you must collect those in your form UI.
+      //    • registration_date is formatted as e.g. “2025-06-05 at 02:15:30 PM UTC+8”.
+      try {
+        // 3a) Count current docs in “patients”
+        const patientsColRef = collection(db, "patients");
+        const patientsSnapshot = await getDocs(patientsColRef);
+        const nextId = (patientsSnapshot.size + 1).toString(); // e.g. “100”
+
+        // 3b) Format “registration_date” in Manila (UTC+8) as “MMMM d, yyyy at hh:mm:ss A UTC+8”
+        const now = new Date();
+        const dateOptions = {
+          timeZone: "Asia/Manila",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        } as const;
+        const timeOptions = {
+          timeZone: "Asia/Manila",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: true,
+        } as const;
+        const formattedDate = now.toLocaleDateString("en-US", dateOptions);
+        const formattedTime = now.toLocaleTimeString("en-US", timeOptions);
+        const registration_date = `${formattedDate} at ${formattedTime} UTC+8`;
+        // e.g. “June 5, 2025 at 02:15:30 PM UTC+8”
+
+        // 3c) Build the patient‐record object
+        const patientData: Record<string, string> = {
+          address: form.address || "",
+          birth_date: form.birthDate || "",
+          contact_numbers: form.phone,
+          email_address: form.email,
+          emergency_contact: form.emergencyContact || "",
+          first_name: form.firstName,
+          gender: form.gender || "",
+          insurance_provider: form.insuranceProvider || "",
+          last_name: form.lastName,
+          registration_date,
+          sex: form.sex || "",
+          uid: user.uid,
+        };
+
+        // 3d) Write to “patients/{nextId}”
+        await setDoc(doc(db, "patients", nextId), patientData);
+      } catch (err) {
+        console.error("Error writing new patient document:", err);
+        // You can decide whether to “fail the whole registration” or just log
+        // For now, we’ll just log and proceed.
+      }
+      // ─────────────────────────────────────────
+
+      // 4) If “assessmentData” was passed, merge it now:
       if (assessmentData) {
         try {
           const userDocRef = doc(db, "users", user.uid);
@@ -127,7 +204,7 @@ const RegisterPage = () => {
         }
       }
 
-      // 4) If “appointmentData” was passed, write that appointment now:
+      // 5) If “appointmentData” was passed, write that appointment now:
       if (appointmentData) {
         try {
           await createAppointment(user.uid, {
@@ -144,7 +221,7 @@ const RegisterPage = () => {
         }
       }
 
-      // 5) Navigate to /home
+      // 6) Navigate to /home
       navigate("/home");
     } catch (err: any) {
       setErrors({ general: err.message || "Failed to register" });
@@ -279,6 +356,12 @@ const RegisterPage = () => {
               }`}
             />
           </div>
+
+          {/* 
+            If you want to collect address, birth_date, etc. at registration time,
+            add more inputs here (e.g. <input name="address" ... />, <input name="birthDate" ... />).
+            Make sure to update `validate()` to check them if they’re required.
+          */}
 
           <button
             type="submit"
